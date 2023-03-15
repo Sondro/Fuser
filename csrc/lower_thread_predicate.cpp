@@ -8,6 +8,7 @@
 #include <lower_thread_predicate.h>
 
 #include <instrumentation.h>
+#include <ir_internal_nodes.h>
 #include <ir_iostream.h>
 #include <ir_utils.h>
 #include <lower2device.h>
@@ -40,7 +41,16 @@ Bool* getPredicatePerParallelType(
                    GpuLower::current()->kernel()->oneVal()))
         ->as<Bool>();
   }
-
+  // when pt is in write_stride, use only a fraction of
+  // thread/block
+  const auto& smap = pred_info.write_stride;
+  if (smap.count(pt) && pred_info.redundant_types.get(pt)) {
+    return SimplifyingIrBuilder::eqExpr(
+               SimplifyingIrBuilder::modExpr(
+                   NamedScalar::getParallelIndex(pt), smap.at(pt)),
+               GpuLower::current()->kernel()->zeroVal())
+        ->as<Bool>();
+  }
   // Otherwise, only thread of index 0 executes the computation
   return SimplifyingIrBuilder::eqExpr(
              NamedScalar::getParallelIndex(pt),
@@ -140,6 +150,9 @@ ParallelTypeBitmap avoidRedundantWrites(const TensorView* out_tv) {
         // latter option seems more reasonable for now. See #1671.
         (!is_reduction && out_tv->getMemoryType() == MemoryType::Global &&
          out_tv_id->isBroadcast() && isParallelTypeThread(pt))) {
+      std::cout << "out_tv_id= " << out_tv_id->toInlineString()
+                << " isBroadcast= " << out_tv_id->isBroadcast()
+                << " isParallelTypeThread= " << pt << std::endl;
       pred.set(pt);
     }
     unused_types.clear(pt);
@@ -506,6 +519,70 @@ void ThreadPredicateMap::build(Fusion* fusion) {
   for (auto expr : fusion->exprs()) {
     updateBitSet(expr);
   }
+
+  // record output tensor and its correspoinding domain merged from broadcast
+  // domain(s)
+  std::vector<std::pair<const TensorView*, IterDomain*>>
+      merged_broadcast_domains;
+  std::vector<const TensorView*> out_tv_without_broadcast_domain;
+  for (auto out_val : fusion->outputs()) {
+    auto out_tv = dynamic_cast<const TensorView*>(out_val);
+    bool tensor_with_domain_merged_from_broadcast = false;
+    auto from = out_tv->getMaybeRFactorDomain();
+    auto all_exp = DependencyCheck::getAllExprsBetween(
+        {from.begin(), from.end()},
+        {out_tv->domain()->domain().begin(), out_tv->domain()->domain().end()});
+    for (auto expr : all_exp) {
+      if (auto merge = dynamic_cast<Merge*>(expr)) {
+        auto domain = merge->out();
+        auto pt = domain->getParallelType();
+        bool from_broadcast =
+            merge->outer()->isBroadcast() || merge->inner()->isBroadcast();
+        if (isParallelTypeThread(pt) && from_broadcast) {
+          merged_broadcast_domains.emplace_back(std::make_pair(out_tv, domain));
+          tensor_with_domain_merged_from_broadcast = true;
+          break;
+        }
+      }
+    }
+    if (!tensor_with_domain_merged_from_broadcast) {
+      out_tv_without_broadcast_domain.emplace_back(out_tv);
+    }
+  }
+
+  // find correspoinding domain in non-broadcasted tensorviews with the same
+  // paralel type, set write_stride to the ratio of the
+  // extents of these two domains e.g. out_tv_ld is {I1*1}, ref_tv_ld is
+  // {I1*I2}, both are paralled by blockIdx.x since {I1*1} is merged from
+  // broadcasted domain, the write_stride should be {I1*I2} /
+  // {I1*1} = {I2} this means gmem write is only done where blockIdx.x % {I2} ==
+  // 0
+  if (out_tv_without_broadcast_domain.size() &&
+      merged_broadcast_domains.size()) {
+    for (auto item : merged_broadcast_domains) {
+      auto out_tv = std::get<0>(item);
+      auto out_tv_ld = std::get<1>(item);
+      auto out_tv_pt = out_tv_ld->getParallelType();
+
+      for (const auto ref_tv : out_tv_without_broadcast_domain) {
+        bool stepIsSet = false;
+        for (auto ref_tv_ld : ref_tv->domain()->domain()) {
+          if (ref_tv_ld->getParallelType() == out_tv_pt &&
+              ref_tv_ld->extent() != out_tv_ld->extent()) {
+            auto val =
+                IrBuilder::divExpr(ref_tv_ld->extent(), out_tv_ld->extent());
+            thread_predicates_[out_tv].write_stride[out_tv_pt] = val;
+            thread_predicates_[out_tv].redundant_types.set(out_tv_pt);
+            stepIsSet = true;
+            break;
+          }
+        }
+        if (stepIsSet)
+          break;
+      }
+    }
+  }
+
   updated_tvs_.clear();
   populateRedundantUseMap(fusion);
 }

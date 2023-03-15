@@ -7886,6 +7886,58 @@ TEST_F(NVFuserTest, FusionCompileIndexType_CUDA) {
   }
 }
 
+// Repro of issue #2125, 1.19e+03 GB/s on A100-80G
+TEST_F(NVFuserTest, FusionAvoidRedundantWriteBroadcastedSoftmaxInput_CUDA) {
+  std::unique_ptr<Fusion> fusion_ptr = std::make_unique<Fusion>();
+  Fusion& fusion = *fusion_ptr.get();
+  FusionGuard fg(&fusion);
+
+  std::vector<int64_t> shape0({2, 512});
+  std::vector<int64_t> shape1({2, 64, 512, 512});
+
+  auto tv0 = makeSymbolicTensor(2);
+  auto tv1 = makeSymbolicTensor(4);
+  fusion.addInput(tv0);
+  fusion.addInput(tv1);
+
+  auto tvb = broadcast(tv0, {false, true, true, false});
+  auto tv2 = add(tvb, IrBuilder::create<Double>(1.0));
+  auto tv3 = add(tv1, tv2);
+  auto tv4 = softmax(tv3, -1);
+  fusion.addOutput(tv2);
+  fusion.addOutput(tv4);
+
+  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+  at::manual_seed(0);
+  at::Tensor t0 = at::ones(shape0, options);
+  at::Tensor t1 = at::ones(shape1, options);
+  std::vector<c10::IValue> inputs = {t0, t1};
+
+  FusionExecutorCache fec(std::move(fusion_ptr));
+  auto cg_outputs = fec.runFusionWithInputs(inputs);
+
+  // check thread_pred and write_stride
+  const auto& fe = fec.getMostRecentKernelRuntime()->executors().at(0);
+  auto kernel = fe.kernel();
+  const auto& thread_pred_map = fe.threadPredMap();
+  for (const auto expr : kernel->exprs()) {
+    auto tv = ir_utils::getTvOutput(expr);
+    if (tv && tv->name() == 15 && tv->getMemoryType() == MemoryType::Global) {
+      const auto& thread_pred = thread_pred_map.getPredicateInfo(tv);
+      bool predicted = thread_pred.redundant_types.get(ParallelType::BIDx);
+      bool has_stride = thread_pred.write_stride.count(ParallelType::BIDx);
+      TORCH_CHECK(
+          predicted && has_stride,
+          "Tv15 should be predicted by ParallelType::BIDx with a write stride!");
+    }
+  }
+
+  auto ref_1 = t0.unsqueeze(1).unsqueeze(1) + 1.0;
+  auto ref_2 = at::_softmax(ref_1 + t1, -1, false);
+  testValidate(
+      fec.fusion(), cg_outputs, inputs, {ref_1, ref_2}, __LINE__, __FILE__);
+}
+
 // Test file size should be up to 10K LoC. Create a new file for more tests.
 
 } // namespace nvfuser
