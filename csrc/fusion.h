@@ -259,6 +259,8 @@ class TORCH_CUDA_CU_API Fusion : public IrContainer {
     loop_rotation_param_.emplace_back(loop_tv, axis, std::move(selection));
   }
 
+  bool hasDynamicTransform();
+
  protected:
   friend SegmentCandidateFinder;
   friend SegmentedFusion;
