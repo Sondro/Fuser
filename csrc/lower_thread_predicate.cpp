@@ -150,9 +150,6 @@ ParallelTypeBitmap avoidRedundantWrites(const TensorView* out_tv) {
         // latter option seems more reasonable for now. See #1671.
         (!is_reduction && out_tv->getMemoryType() == MemoryType::Global &&
          out_tv_id->isBroadcast() && isParallelTypeThread(pt))) {
-      std::cout << "out_tv_id= " << out_tv_id->toInlineString()
-                << " isBroadcast= " << out_tv_id->isBroadcast()
-                << " isParallelTypeThread= " << pt << std::endl;
       pred.set(pt);
     }
     unused_types.clear(pt);
