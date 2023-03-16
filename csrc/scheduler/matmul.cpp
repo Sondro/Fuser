@@ -7,7 +7,14 @@
 // clang-format on
 #include <scheduler/matmul.h>
 #include <scheduler/mma_utils.h>
+#include <scheduler/registry.h>
 #include <scheduler/utils.h>
+
+// NOTE: included to avoid compilation error caused by missing destructor in
+// 'SchedulerRuntimeInfo'
+#include <executor_utils.h>
+
+#include <sstream>
 
 namespace nvfuser {
 
@@ -46,14 +53,35 @@ void moveInnerBroadcastLeft(TensorView* tv, int number_of_inner_pos = 3) {
 
 } // namespace
 
-void scheduleMatmul(
-    TensorView* c,
-    TensorView* a,
-    TensorView* b,
-    MatmulParam& params) {
-  // Unpack from params.
-  auto& mma_builder = params.mma_builder;
-  auto& gemm_tile = params.tile_sizes;
+void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
+  const auto& inputs = fusion->inputs();
+  const auto& outputs = fusion->outputs();
+
+  TORCH_CHECK(
+      inputs.size() == 2,
+      "scheduleMatmul supports only fusions with two inputs");
+  TORCH_CHECK(
+      outputs.size() == 1,
+      "scheduleMatmul supports only fusions with single output");
+
+  TORCH_CHECK(
+      inputs[0]->isA<TensorView>(),
+      "fusion's first inpus is not an instance of TensorView class");
+  TORCH_CHECK(
+      inputs[1]->isA<TensorView>(),
+      "fusion's second inpus is not an instance of TensorView class");
+  TORCH_CHECK(
+      outputs[0]->isA<TensorView>(),
+      "fusion's output is not an instance of TensorView class");
+
+  TensorView* a = inputs[0]->as<TensorView>();
+  TensorView* b = inputs[1]->as<TensorView>();
+  TensorView* c = outputs[0]->as<TensorView>();
+
+  // Collect mma swizzle info
+  auto mma_builder =
+      MmaBuilder(params.mma_op, params.tile_sizes).layout(params.layout);
+  const auto& gemm_tile = params.tile_sizes;
 
   // Including current tensor naming convention for reference,
   //  this is very temporary and will change over time and
@@ -92,7 +120,7 @@ void scheduleMatmul(
 
   // TODO:
   // Beyond this point, mma_builder really just becomes a populated
-  //  list of parameters to describes the mma swizzles that should
+  //  list of parameters to describe the mma swizzles that should
   //  be annotated on the tensor domain. Conceptually the mma builder
   //  object should be separated to 2 parts, one as scheduler utility
   //  and the other as matmul heuristic parameters, which we are
@@ -106,7 +134,7 @@ void scheduleMatmul(
   auto cc = c->cacheBefore();
 
   // Get the input to the mma op.
-  auto mma = dynamic_cast<MmaOp*>(cc->definition());
+  auto mma = cc->definition()->as<MmaOp>();
   TORCH_INTERNAL_ASSERT(mma != nullptr);
   auto ab = mma->inA()->as<TensorView>();
   auto bb = mma->inB()->as<TensorView>();

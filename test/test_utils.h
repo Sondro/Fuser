@@ -461,12 +461,37 @@ TensorView* matmul(TensorView* a, TensorView* b, MatmulLayout layout);
 // Utility to generate matmul input tensors based on given layout
 at::Tensor atMatmul(at::Tensor a, at::Tensor b, MatmulLayout layout);
 
+// Utility to generate matmul output tensor based on given layout and expected
+// precision on input
+at::Tensor atMatmul(
+    at::Tensor a,
+    at::Tensor b,
+    const c10::ScalarType input_Type,
+    MatmulLayout layout);
+
 // Utility to generate reference results based on given layout
 std::pair<at::Tensor, at::Tensor> fp16MatmulAtInput(
     int M,
     int N,
     int K,
     MatmulLayout layout);
+
+// Labels to describe tensor position in matmul:
+// A, B - input
+// C - input if beta is provided, shape must be the same as output (D)
+// D - output
+enum class TensorMatmulPos { A, B, C, D };
+
+// Utility to generate buffers based on given problem, layout and tensor
+// position in matmul
+at::Tensor matmulAtInput(
+    const int M,
+    const int N,
+    const int K,
+    const MatmulLayout layout,
+    const TensorMatmulPos tensor,
+    const c10::ScalarType dType = at::kHalf,
+    const int device = 0);
 
 #define REQUIRE_DEVICE_SMEM_SIZE(required_size, device_idx)                 \
   if (at::cuda::getDeviceProperties(device_idx)->sharedMemPerBlockOptin <   \

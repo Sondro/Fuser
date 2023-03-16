@@ -297,6 +297,24 @@ at::Tensor atMatmul(at::Tensor a, at::Tensor b, MatmulLayout layout) {
   return at::Tensor();
 }
 
+at::Tensor atMatmul(
+    at::Tensor a,
+    at::Tensor b,
+    const c10::ScalarType input_type,
+    MatmulLayout layout) {
+  switch (layout) {
+    case MatmulLayout::TT:
+      return a.to(input_type).matmul(b.to(input_type));
+    case MatmulLayout::TN:
+      return a.to(input_type).matmul(b.to(input_type).t());
+    case MatmulLayout::NT:
+      return a.t().to(input_type).matmul(b.to(input_type));
+    default:
+      TORCH_CHECK(false, "unsupported data layout.");
+  }
+  return at::Tensor();
+}
+
 std::pair<at::Tensor, at::Tensor> fp16MatmulAtInput(
     int M,
     int N,
@@ -318,6 +336,63 @@ std::pair<at::Tensor, at::Tensor> fp16MatmulAtInput(
       TORCH_CHECK(false, "unsupported data layout.");
   }
   return std::make_pair(at::Tensor(), at::Tensor());
+}
+
+at::Tensor matmulAtInput(
+    const int M,
+    const int N,
+    const int K,
+    const MatmulLayout layout,
+    const TensorMatmulPos tensor,
+    const c10::ScalarType dType,
+    const int device) {
+  const auto options =
+      at::TensorOptions().dtype(dType).device(at::kCUDA, device);
+
+  // handle C and D tensors, layout does not impact shape
+  switch (tensor) {
+    case TensorMatmulPos::C:
+    case TensorMatmulPos::D:
+      return at::randn({M, N}, options);
+    default:
+      break;
+  }
+
+  switch (layout) {
+    case MatmulLayout::TT:
+      switch (tensor) {
+        case TensorMatmulPos::A:
+          return at::randn({M, K}, options);
+        case TensorMatmulPos::B:
+          return at::randn({K, N}, options);
+        default:
+          break;
+      }
+      break;
+    case MatmulLayout::TN:
+      switch (tensor) {
+        case TensorMatmulPos::A:
+          return at::randn({M, K}, options);
+        case TensorMatmulPos::B:
+          return at::randn({N, K}, options);
+        default:
+          break;
+      }
+      break;
+    case MatmulLayout::NT:
+      switch (tensor) {
+        case TensorMatmulPos::A:
+          return at::randn({K, M}, options);
+        case TensorMatmulPos::B:
+          return at::randn({K, N}, options);
+        default:
+          break;
+      }
+      break;
+    default:
+      TORCH_CHECK(false, "unsupported data layout.");
+  }
+  TORCH_CHECK(false, "unsupported tensor position.");
 }
 
 } // namespace nvfuser

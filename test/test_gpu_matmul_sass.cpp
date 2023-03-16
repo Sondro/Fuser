@@ -9,6 +9,7 @@
 
 #include <ops/arith.h>
 #include <scheduler/matmul.h>
+#include <scheduler/matmul_heuristic.h>
 #include <test/test_utils.h>
 
 #include <sstream>
@@ -60,13 +61,15 @@ sass::Container getSASSFor(
 
   auto mma_builder = MmaBuilder(macro, gemm_tile).layout(layout);
 
-  MatmulParam params(mma_builder);
+  MatmulParams params;
+  params.mma_op = macro;
+  params.layout = layout;
   params.tile_sizes = gemm_tile;
   params.async_gmem_load_operands = true;
   params.double_buffer_options.double_buffer_smem_write = true;
   params.double_buffer_options.double_buffer_smem_read = true;
   params.double_buffer_options.smem_double_buffer_stage = 4;
-  scheduleMatmul(tv2, tv0, tv1, params);
+  scheduleMatmul(&fusion, params);
 
   at::manual_seed(0);
   auto inputs = fp16MatmulAtInput(M, N, K, layout);
