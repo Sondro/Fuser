@@ -1477,11 +1477,9 @@ class TestNvFuserFrontend(TestCase):
         def nvfuser_fusion_id(fd : FusionDefinition) -> None :
             t0 = fd.from_pytorch(inputs[0])
             t1 = fd.from_pytorch(inputs[1])
-            t1_sizes = fd.ops.tensor_sizes(t1)
             t2 = fd.ops.slice(t0, [0, 0, 0, 0], [1, 1, 128, 128], [1, 1, 1, 1])
-            t3 = fd.ops.broadcast_in_dim(t2, output_shape=t1_sizes, broadcast_dims=[0, 1, 2, 3])
-            t4 = fd.ops.add(t0, t1)
-            fd.add_output(t4)
+            t3 = fd.ops.add(t2, t1)
+            fd.add_output(t3)
 
         with FusionDefinition() as fd:
             nvfuser_fusion_id(fd)
